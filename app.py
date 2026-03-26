@@ -219,9 +219,16 @@ def render_inputs() -> Optional[pd.DataFrame]:
     for col in REQUIRED_COLUMNS:
         edited_df[col] = edited_df[col].fillna("").astype(str).str.strip()
 
+    # Corrige les lignes fantômes (souvent ajoutées par certains flux CSV/data_editor):
+    # on supprime toute ligne où toutes les colonnes métier sont vides.
+    non_empty_mask = edited_df[REQUIRED_COLUMNS].apply(
+        lambda row: any(str(value).strip() for value in row), axis=1
+    )
+    edited_df = edited_df[non_empty_mask].reset_index(drop=True)
+
     st.session_state.csv_editor_df = edited_df
     st.session_state.uploaded_df = edited_df
-    st.caption(f"{len(df)} leads détectés.")
+    st.caption(f"{len(edited_df)} leads détectés.")
     _ = template  # clé conservée dans st.session_state["email_template"]
     return edited_df
 
