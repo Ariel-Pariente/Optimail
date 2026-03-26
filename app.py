@@ -1,24 +1,22 @@
 import re
-import smtplib
 import unicodedata
-from email.mime.text import MIMEText
 from typing import Dict, Optional
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 
 
-MODEL_NAME = "gemini-3.1-flash-lite-preview"
-REQUIRED_COLUMNS = ["Email", "Entreprise", "Commentaire"]
+MODEL_NAME = "gemini-3-flash-preview"
+REQUIRED_COLUMNS = ["Email", "Prenom", "Entreprise", "Commentaire"]
 
 
 def init_session_state() -> None:
     """Initialise toutes les clés de session nécessaires."""
     defaults = {
         "drafts_by_row": {},
-        "sent_status_by_row": {},
         "uploaded_df": None,
         "last_uploaded_signature": None,
         "current_uploaded_signature": None,
@@ -79,6 +77,7 @@ def normalize_leads_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     aliases = {
         "Email": {"email", "mail", "courriel", "e-mail", "adresseemail", "contactemail"},
+        "Prenom": {"prenom", "firstname", "first_name", "name", "nomcontact", "contact"},
         "Entreprise": {"entreprise", "societe", "company", "organisation", "nomentreprise", "raisonsociale"},
         "Commentaire": {"commentaire", "commentaires", "besoin", "message", "notes", "note", "remarque", "remarques"},
     }
@@ -102,24 +101,30 @@ def normalize_leads_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_prompt(template: str, entreprise: str, commentaire: str) -> str:
+def build_prompt(template: str, prenom: str, entreprise: str, commentaire: str) -> str:
     """Construit le prompt envoyé à Gemini."""
     return (
         "Tu es un assistant commercial expert en prospection B2B post-salon CSE pour l'entreprise pousses Et Plantes.\n"
         "Rédige uniquement le corps d'email en français, ton professionnel, naturel et personnalisé.\n"
         "N'inclus pas d'objet, de signature automatique, ni de markdown.\n\n"
         f"Template de base:\n{template}\n\n"
+        f"Prénom du contact: {prenom}\n"
         f"Entreprise destinataire du mail: {entreprise}\n"
         f"Commentaire/Besoin: {commentaire}\n"
     )
 
 
 def generate_email_draft(
-    api_key: str, template: str, entreprise: str, commentaire: str
+    api_key: str, template: str, prenom: str, entreprise: str, commentaire: str
 ) -> str:
     """Appelle Gemini et renvoie un brouillon de mail."""
     client = genai.Client(api_key=api_key)
-    prompt = build_prompt(template=template, entreprise=entreprise, commentaire=commentaire)
+    prompt = build_prompt(
+        template=template,
+        prenom=prenom,
+        entreprise=entreprise,
+        commentaire=commentaire,
+    )
     response = client.models.generate_content(
         model=MODEL_NAME,
         contents=prompt,
@@ -128,43 +133,31 @@ def generate_email_draft(
     return (response.text or "").strip()
 
 
-def send_email_smtp(
-    smtp_server: str,
-    smtp_port: int,
-    sender_email: str,
-    sender_password: str,
-    recipient_email: str,
-    body: str,
-    subject: str = "Suite à notre échange au salon CSE",
-) -> None:
-    """Envoie l'email via SMTP SSL."""
-    msg = MIMEText(body, _subtype="plain", _charset="utf-8")
-    msg["Subject"] = subject
-    msg["From"] = sender_email
-    msg["To"] = recipient_email
-
-    with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=20) as server:
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, [recipient_email], msg.as_string())
-
-
 def render_sidebar() -> Dict[str, str]:
-    """Affiche la configuration API/SMTP dans la sidebar."""
+    """Affiche la configuration API dans la sidebar."""
     st.sidebar.header("Configuration")
 
     api_key = st.sidebar.text_input("Clé API Gemini", type="password")
-    sender_email = st.sidebar.text_input("Email expéditeur")
-    sender_password = st.sidebar.text_input("Mot de passe d'application", type="password")
-    smtp_server = st.sidebar.text_input("Serveur SMTP", value="smtp.gmail.com")
-    smtp_port = st.sidebar.number_input("Port SMTP", min_value=1, max_value=65535, value=465)
 
     return {
         "api_key": api_key.strip(),
-        "sender_email": sender_email.strip(),
-        "sender_password": sender_password,
-        "smtp_server": smtp_server.strip(),
-        "smtp_port": int(smtp_port),
     }
+
+
+def render_copy_button(text: str, key: str) -> None:
+    """Affiche un bouton HTML qui copie le texte dans le presse-papiers du navigateur."""
+    safe_text = (
+        text.replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("${", "\\${")
+    )
+    button_id = f"copy_btn_{key}"
+    html = f"""
+    <button id="{button_id}" onclick="navigator.clipboard.writeText(`{safe_text}`)">
+      Copier
+    </button>
+    """
+    components.html(html, height=36)
 
 
 def render_inputs() -> Optional[pd.DataFrame]:
@@ -238,25 +231,26 @@ def generate_drafts_for_dataframe(df: pd.DataFrame, api_key: str, template: str)
     for idx, row in df.iterrows():
         row_id = str(idx)
         email = row["Email"]
+        prenom = row["Prenom"]
         entreprise = row["Entreprise"]
         commentaire = row["Commentaire"]
 
-        with st.spinner(f"Génération pour {entreprise} ({email})..."):
+        with st.spinner(f"Génération pour {prenom} - {entreprise} ({email})..."):
             draft = generate_email_draft(
                 api_key=api_key,
                 template=template,
+                prenom=prenom,
                 entreprise=entreprise,
                 commentaire=commentaire,
             )
 
         # La clé par ligne évite les collisions si des emails se ressemblent/changent.
         st.session_state.drafts_by_row[row_id] = draft
-        st.session_state.sent_status_by_row.setdefault(row_id, False)
 
 
-def render_output_board(df: pd.DataFrame, smtp_conf: Dict[str, str]) -> None:
-    """Affiche le tableau de bord interactif et gère l'envoi ligne par ligne."""
-    st.subheader("2) Brouillons et envoi")
+def render_output_board(df: pd.DataFrame) -> None:
+    """Affiche le tableau de bord interactif et la copie ligne par ligne."""
+    st.subheader("2) Brouillons personnalisés")
 
     header_cols = st.columns([2, 2, 4, 1.5])
     header_cols[0].markdown("**Lead**")
@@ -269,12 +263,13 @@ def render_output_board(df: pd.DataFrame, smtp_conf: Dict[str, str]) -> None:
     for i, row in df.iterrows():
         row_id = str(i)
         email = row["Email"]
+        prenom = row["Prenom"]
         entreprise = row["Entreprise"]
         commentaire = row["Commentaire"]
 
         c1, c2, c3, c4 = st.columns([2, 2, 4, 1.5], vertical_alignment="top")
 
-        c1.write(f"**{entreprise}**")
+        c1.write(f"**{prenom}** - {entreprise}")
         c1.caption(email)
 
         c2.write(commentaire or "_Aucun commentaire_")
@@ -293,38 +288,18 @@ def render_output_board(df: pd.DataFrame, smtp_conf: Dict[str, str]) -> None:
         # Synchronisation bidirectionnelle pour garder la source de vérité stable.
         st.session_state.drafts_by_row[row_id] = edited_content
 
-        is_sent = st.session_state.sent_status_by_row.get(row_id, False)
-        if is_sent:
-            c4.success("Envoyé")
-            st.markdown("---")
-            continue
-
-        send_clicked = c4.button("Envoyer", key=f"send_btn_{row_id}", use_container_width=True)
-        if send_clicked:
-            if not is_valid_email(email):
-                c4.error("Email invalide")
-            elif not smtp_conf["sender_email"] or not smtp_conf["sender_password"]:
-                c4.error("SMTP incomplet")
-            elif not smtp_conf["smtp_server"] or not smtp_conf["smtp_port"]:
-                c4.error("SMTP invalide")
-            elif not edited_content.strip():
-                c4.error("Contenu vide")
-            else:
-                try:
-                    send_email_smtp(
-                        smtp_server=smtp_conf["smtp_server"],
-                        smtp_port=smtp_conf["smtp_port"],
-                        sender_email=smtp_conf["sender_email"],
-                        sender_password=smtp_conf["sender_password"],
-                        recipient_email=email,
-                        body=edited_content,
-                    )
-                    st.session_state.sent_status_by_row[row_id] = True
-                    st.rerun()
-                except smtplib.SMTPException as exc:
-                    c4.error(f"Erreur SMTP: {exc}")
-                except Exception as exc:  # Sécurité supplémentaire
-                    c4.error(f"Erreur inattendue: {exc}")
+        if edited_content.strip():
+            render_copy_button(text=edited_content, key=row_id)
+            c4.download_button(
+                "Télécharger .txt",
+                data=edited_content,
+                file_name=f"email_{prenom}_{entreprise}.txt".replace(" ", "_"),
+                mime="text/plain",
+                key=f"download_btn_{row_id}",
+                use_container_width=True,
+            )
+        else:
+            c4.info("Texte vide")
 
         st.markdown("---")
 
@@ -332,10 +307,10 @@ def render_output_board(df: pd.DataFrame, smtp_conf: Dict[str, str]) -> None:
 def main() -> None:
     st.set_page_config(page_title="Prospection CSE - Gemini", layout="wide")
     st.title("Générateur d'emails de prospection post-salon CSE")
-    st.caption("Générez, éditez et envoyez des emails hyper-personnalisés.")
+    st.caption("Générez et copiez des emails hyper-personnalisés (sans envoi automatique).")
 
     init_session_state()
-    smtp_conf = render_sidebar()
+    api_conf = render_sidebar()
     df = render_inputs()
 
     if df is None:
@@ -345,24 +320,23 @@ def main() -> None:
     if st.session_state.last_uploaded_signature != current_signature:
         # Nouveau fichier détecté: reset propre des états associés.
         st.session_state.drafts_by_row = {}
-        st.session_state.sent_status_by_row = {}
         st.session_state.last_uploaded_signature = current_signature
 
     if st.button("Générer les brouillons", type="primary"):
         template = st.session_state.get("email_template", "").strip()
-        if not smtp_conf["api_key"]:
+        if not api_conf["api_key"]:
             st.error("Merci de renseigner la clé API Gemini dans la barre latérale.")
         elif not template:
             st.error("Merci de renseigner le template de l'email.")
         else:
             try:
-                generate_drafts_for_dataframe(df=df, api_key=smtp_conf["api_key"], template=template)
+                generate_drafts_for_dataframe(df=df, api_key=api_conf["api_key"], template=template)
                 st.success("Brouillons générés avec succès.")
             except Exception as exc:
                 st.error(f"Erreur durant la génération Gemini : {exc}")
 
     if st.session_state.drafts_by_row:
-        render_output_board(df=df, smtp_conf=smtp_conf)
+        render_output_board(df=df)
     else:
         st.info("Cliquez sur 'Générer les brouillons' pour afficher la prévisualisation.")
 
