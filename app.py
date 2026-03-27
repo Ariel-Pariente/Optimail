@@ -9,7 +9,13 @@ from google import genai
 from google.genai import types
 
 
-MODEL_NAME = "gemini-3-flash-preview"
+MODEL_OPTIONS = [
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-2.5-flash",
+]
+DEFAULT_MODEL = "gemini-3-flash-preview"
 REQUIRED_COLUMNS = ["Email", "Prenom", "Entreprise", "Commentaire"]
 
 
@@ -21,6 +27,7 @@ def init_session_state() -> None:
         "last_uploaded_signature": None,
         "current_uploaded_signature": None,
         "csv_editor_df": None,
+        "selected_model": DEFAULT_MODEL,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -115,7 +122,12 @@ def build_prompt(template: str, prenom: str, entreprise: str, commentaire: str) 
 
 
 def generate_email_draft(
-    api_key: str, template: str, prenom: str, entreprise: str, commentaire: str
+    api_key: str,
+    model_name: str,
+    template: str,
+    prenom: str,
+    entreprise: str,
+    commentaire: str,
 ) -> str:
     """Appelle Gemini et renvoie un brouillon de mail."""
     client = genai.Client(api_key=api_key)
@@ -126,7 +138,7 @@ def generate_email_draft(
         commentaire=commentaire,
     )
     response = client.models.generate_content(
-        model=MODEL_NAME,
+        model=model_name,
         contents=prompt,
         config=types.GenerateContentConfig(temperature=0.7),
     )
@@ -138,9 +150,18 @@ def render_sidebar() -> Dict[str, str]:
     st.sidebar.header("Configuration")
 
     api_key = st.sidebar.text_input("Clé API Gemini", type="password")
+    selected_model = st.sidebar.selectbox(
+        "Modèle Gemini",
+        options=MODEL_OPTIONS,
+        index=MODEL_OPTIONS.index(st.session_state.selected_model)
+        if st.session_state.selected_model in MODEL_OPTIONS
+        else MODEL_OPTIONS.index(DEFAULT_MODEL),
+    )
+    st.session_state.selected_model = selected_model
 
     return {
         "api_key": api_key.strip(),
+        "model_name": selected_model,
     }
 
 
@@ -233,7 +254,9 @@ def render_inputs() -> Optional[pd.DataFrame]:
     return edited_df
 
 
-def generate_drafts_for_dataframe(df: pd.DataFrame, api_key: str, template: str) -> None:
+def generate_drafts_for_dataframe(
+    df: pd.DataFrame, api_key: str, model_name: str, template: str
+) -> None:
     """Génère les brouillons pour chaque lead et stocke en session_state."""
     for idx, row in df.iterrows():
         row_id = str(idx)
@@ -245,6 +268,7 @@ def generate_drafts_for_dataframe(df: pd.DataFrame, api_key: str, template: str)
         with st.spinner(f"Génération pour {prenom} - {entreprise} ({email})..."):
             draft = generate_email_draft(
                 api_key=api_key,
+                model_name=model_name,
                 template=template,
                 prenom=prenom,
                 entreprise=entreprise,
@@ -337,7 +361,12 @@ def main() -> None:
             st.error("Merci de renseigner le template de l'email.")
         else:
             try:
-                generate_drafts_for_dataframe(df=df, api_key=api_conf["api_key"], template=template)
+                generate_drafts_for_dataframe(
+                    df=df,
+                    api_key=api_conf["api_key"],
+                    model_name=api_conf["model_name"],
+                    template=template,
+                )
                 st.success("Brouillons générés avec succès.")
             except Exception as exc:
                 st.error(f"Erreur durant la génération Gemini : {exc}")
